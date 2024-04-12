@@ -8,8 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
-#include <math.h>
-#include <stdlib.h>
+
 
 #include "me.h"
 #include "tables.h"
@@ -104,7 +103,6 @@ __global__ void computeSADIntegrated(int left, int right, int top, int bottom, i
 static void me_block_8x8(struct c63_common *cm, int mb_x, int mb_y,
   int color_component, uint8_t *d_orig, uint8_t *d_ref)
 {
-    struct macroblock *mb = &cm->curframe->mbs[color_component][mb_y * cm->padw[color_component] / 8 + mb_x];
     int range = cm->me_search_range;
     if (color_component > 0) { range /= 2; }
 
