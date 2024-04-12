@@ -78,8 +78,6 @@ static void me_block_8x8(struct c63_common *cm, int mb_x, int mb_y,
   if (right > (w - 8)) { right = w - 8; }
   if (bottom > (h - 8)) { bottom = h - 8; }
 
-  int x, y;
-
   int mx = mb_x * 8;
   int my = mb_y * 8;
 
@@ -140,20 +138,6 @@ static void me_block_8x8(struct c63_common *cm, int mb_x, int mb_y,
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 void c63_motion_estimate(struct c63_common *cm)
 {
   /* Compare this frame with previous reconstructed frame */
@@ -182,57 +166,59 @@ void c63_motion_estimate(struct c63_common *cm)
   }
 }
 
-/* Motion compensation for 8x8 block */
-static void mc_block_8x8(struct c63_common *cm, int mb_x, int mb_y,
-    uint8_t *predicted, uint8_t *ref, int color_component)
+
+
+__global__ void cuda_mc_block_8x8(macroblock mb, int w, uint8_t *predicted, uint8_t *ref, int mv_x, int mv_y)
 {
-  struct macroblock *mb =
-    &cm->curframe->mbs[color_component][mb_y*cm->padw[color_component]/8+mb_x];
+    if (!mb.use_mv) { return; }
 
-  if (!mb->use_mv) { return; }
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
 
-  int left = mb_x * 8;
-  int top = mb_y * 8;
-  int right = left + 8;
-  int bottom = top + 8;
-
-  int w = cm->padw[color_component];
-
-  /* Copy block from ref mandated by MV */
-  int x, y;
-
-  for (y = top; y < bottom; ++y)
-  {
-    for (x = left; x < right; ++x)
-    {
-      predicted[y*w+x] = ref[(y + mb->mv_y) * w + (x + mb->mv_x)];
+    // Check if within bounds to prevent out-of-bounds access
+    if (x < 8 && y < 8) {
+        predicted[y * w + x] = ref[(y + mv_y) * w + (x + mv_x)];
     }
-  }
 }
 
+
+
+// this had no impact on perfomance... its probably jsut too slow to move the data over... but i tried anyway, and the code looks almost nice
 void c63_motion_compensate(struct c63_common *cm)
 {
-  int mb_x, mb_y;
+    int mb_x, mb_y;
 
-  /* Luma */
-  for (mb_y = 0; mb_y < cm->mb_rows; ++mb_y)
-  {
-    for (mb_x = 0; mb_x < cm->mb_cols; ++mb_x)
+    // Loop over all macroblocks
+    for (mb_y = 0; mb_y < cm->mb_rows; ++mb_y)
     {
-      mc_block_8x8(cm, mb_x, mb_y, cm->curframe->predicted->Y,
-          cm->refframe->recons->Y, Y_COMPONENT);
-    }
-  }
+        for (mb_x = 0; mb_x < cm->mb_cols; ++mb_x)
+        {
+            // Handle Y, U, and V components separately due to different pointers
+            int colors[] = {Y_COMPONENT, U_COMPONENT, V_COMPONENT};
+            uint8_t* predicted_ptrs[] = {cm->curframe->predicted->Y, cm->curframe->predicted->U, cm->curframe->predicted->V};
+            uint8_t* ref_ptrs[] = {cm->refframe->recons->Y, cm->refframe->recons->U, cm->refframe->recons->V};
 
-  /* Chroma */
-  for (mb_y = 0; mb_y < cm->mb_rows / 2; ++mb_y)
-  {
-    for (mb_x = 0; mb_x < cm->mb_cols / 2; ++mb_x)
-    {
-      mc_block_8x8(cm, mb_x, mb_y, cm->curframe->predicted->U,
-          cm->refframe->recons->U, U_COMPONENT);
-      mc_block_8x8(cm, mb_x, mb_y, cm->curframe->predicted->V,
-          cm->refframe->recons->V, V_COMPONENT);
+            for (int color_idx = 0; color_idx < 3; ++color_idx)
+            {
+                int color = colors[color_idx];
+                int w = cm->padw[color];
+                macroblock *mb = &cm->curframe->mbs[color][mb_y * (w/8) + mb_x];
+                uint8_t *predicted = predicted_ptrs[color_idx];
+                uint8_t *ref = ref_ptrs[color_idx];
+
+                int mv_x = mb->mv_x;
+                int mv_y = mb->mv_y;
+
+                // Ensure width and height limits are respected
+                if (mb_x < w && mb_y < cm->padh[color])
+                {
+                    // Launch kernel for the current macroblock and color component
+                    cuda_mc_block_8x8<<<1, dim3(8, 8)>>>(*mb, w, predicted, ref, mv_x, mv_y);
+                }
+            }
+        }
     }
-  }
+
+    // Synchronize after all kernel launches
+    cudaDeviceSynchronize();
 }
