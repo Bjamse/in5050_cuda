@@ -13,13 +13,14 @@
 
 #include "me.h"
 #include "tables.h"
-
+/*
 static void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
 {
   int u, v;
 
   *result = 0;
 
+  
   for (v = 0; v < 8; ++v)
   {
     for (u = 0; u < 8; ++u)
@@ -27,7 +28,23 @@ static void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *res
       *result += abs(block2[v*stride+u] - block1[v*stride+u]);
     }
   }
+  
 }
+*/
+
+__global__ void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
+{
+  int i = threadIdx.x;
+
+
+  if(i< 64){
+    // int v = i / 8;  // Determine row
+    // int u = i % 8;  // Determine column
+    *result += abs(block2[i / 8 * stride + i % 8] - block1[i / 8 * stride + i % 8]);
+  }
+  
+}
+
 
 /* Motion estimation for 8x8 block */
 static void me_block_8x8(struct c63_common *cm, int mb_x, int mb_y,
@@ -63,14 +80,25 @@ static void me_block_8x8(struct c63_common *cm, int mb_x, int mb_y,
 
   int best_sad = INT_MAX;
 
+
+  uint8_t *cu_orig, *cu_ref;
+
+
+  cudaMemcpy(cu_orig, orig, w*h * sizeof(uint8_t), cudaMemcpyHostToDevice);
+  cudaMemcpy(cu_ref, ref, w*h * sizeof(uint8_t), cudaMemcpyHostToDevice);
+
+  /*
+  uint8_t * offsett = orig + my*w+mx;
+
+
   for (y = top; y < bottom; ++y)
   {
     for (x = left; x < right; ++x)
     {
       int sad;
-      sad_block_8x8(orig + my*w+mx, ref + y*w+x, w, &sad);
+      sad_block_8x8(offsett, ref + y*w+x, w, &sad);
 
-      /* printf("(%4d,%4d) - %d\n", x, y, sad); */
+      /// printf("(%4d,%4d) - %d\n", x, y, sad); 
 
       if (sad < best_sad)
       {
@@ -80,6 +108,28 @@ static void me_block_8x8(struct c63_common *cm, int mb_x, int mb_y,
       }
     }
   }
+  */
+
+  uint8_t * cu_offsett = cu_orig + my*w+mx;
+  for (y = top; y < bottom; ++y)
+  {
+    for (x = left; x < right; ++x)
+    {
+      int sad = 0;
+      sad_block_8x8 <<<1, 64>>>(cu_offsett, cu_ref + y*w+x, w, &sad);
+
+      cudaDeviceSynchronize();
+      if (sad < best_sad)
+      {
+        mb->mv_x = x - mx;
+        mb->mv_y = y - my;
+        best_sad = sad;
+      }
+    }
+  }
+
+  cudaFree(cu_orig);
+  cudaFree(cu_ref);
 
   /* Here, there should be a threshold on SAD that checks if the motion vector
      is cheaper than intraprediction. We always assume MV to be beneficial */
@@ -89,6 +139,24 @@ static void me_block_8x8(struct c63_common *cm, int mb_x, int mb_y,
 
   mb->use_mv = 1;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 void c63_motion_estimate(struct c63_common *cm)
 {

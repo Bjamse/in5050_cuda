@@ -1,7 +1,7 @@
 CC=nvcc
 CFLAGS = -O1 -g -G
 
-SOURCES = c63_write.cu c63dec.cu c63enc.cu common.cu io.cu me.cu tables.cu quantdct.cu
+SOURCES = c63_write.cu c63dec.cu c63enc.cu common.cu io.cu me.cu tables.cu quantdct.cu 
 OBJECTS = $(SOURCES:.c=.o)
 
 .PHONY: clean  all
