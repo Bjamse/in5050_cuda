@@ -10,3 +10,7 @@ c63pred
 # data files
 *.yuv
 *.c63
+report1.nsys-rep
+report1.sqlite
+report2.nsys-rep
+report2.sqlite
