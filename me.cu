@@ -14,6 +14,54 @@
 #include "me.h"
 #include "tables.h"
 
+
+int *d_best_sad, *d_best_x, *d_best_y; 
+uint8_t *d_orig_y, *d_orig_u, *d_orig_v;
+uint8_t *d_ref_y, *d_ref_u, *d_ref_v;
+
+
+
+void initialize_device_memory(struct c63_common *cm)
+{
+  int total_size_y = cm->padw[Y_COMPONENT] * cm->padh[Y_COMPONENT];
+  int total_size_u = cm->padw[U_COMPONENT] * cm->padh[U_COMPONENT];
+  int total_size_v = cm->padw[V_COMPONENT] * cm->padh[V_COMPONENT];
+
+  cudaMalloc(&d_orig_y, total_size_y * sizeof(uint8_t));
+  cudaMalloc(&d_ref_y, total_size_y * sizeof(uint8_t));
+
+  cudaMalloc(&d_orig_u, total_size_u * sizeof(uint8_t));
+  cudaMalloc(&d_ref_u, total_size_u * sizeof(uint8_t));
+
+  cudaMalloc(&d_orig_v, total_size_v * sizeof(uint8_t));
+  cudaMalloc(&d_ref_v, total_size_v * sizeof(uint8_t));
+
+  // Allocate memory for best_sad, best_x, best_y on device
+  cudaMalloc(&d_best_sad, sizeof(int));
+  cudaMalloc(&d_best_x, sizeof(int));
+  cudaMalloc(&d_best_y, sizeof(int));
+}
+
+
+void cleanup_device_memory()
+{
+    // Free each allocated device pointer for original and reference frames
+    cudaFree(d_orig_y);
+    cudaFree(d_orig_u);
+    cudaFree(d_orig_v);
+
+    cudaFree(d_ref_y);
+    cudaFree(d_ref_u);
+    cudaFree(d_ref_v);
+
+    // Free device pointers for SAD calculations
+    cudaFree(d_best_sad);
+    cudaFree(d_best_x);
+    cudaFree(d_best_y);
+}
+
+
+
 __global__ void computeSADIntegrated(int left, int right, int top, int bottom, int w, int mx, int my, uint8_t *cu_offset, uint8_t *cu_ref, int *best_sad, int *best_x, int *best_y)
 {
     int x = left + blockIdx.x * blockDim.x + threadIdx.x;
@@ -51,119 +99,78 @@ __global__ void computeSADIntegrated(int left, int right, int top, int bottom, i
 
 
 
+
 /* Motion estimation for 8x8 block */
 static void me_block_8x8(struct c63_common *cm, int mb_x, int mb_y,
-    uint8_t *orig, uint8_t *ref, int color_component)
+  int color_component, uint8_t *d_orig, uint8_t *d_ref)
 {
-  struct macroblock *mb =
-    &cm->curframe->mbs[color_component][mb_y*cm->padw[color_component]/8+mb_x];
+    struct macroblock *mb = &cm->curframe->mbs[color_component][mb_y * cm->padw[color_component] / 8 + mb_x];
+    int range = cm->me_search_range;
+    if (color_component > 0) { range /= 2; }
 
-  int range = cm->me_search_range;
+    int left = max(mb_x * 8 - range, 0);
+    int top = max(mb_y * 8 - range, 0);
+    int right = min(mb_x * 8 + range, cm->padw[color_component] - 8);
+    int bottom = min(mb_y * 8 + range, cm->padh[color_component] - 8);
 
-  /* Quarter resolution for chroma channels. */
-  if (color_component > 0) { range /= 2; }
+    int mx = mb_x * 8;
+    int my = mb_y * 8;
 
-  int left = mb_x * 8 - range;
-  int top = mb_y * 8 - range;
-  int right = mb_x * 8 + range;
-  int bottom = mb_y * 8 + range;
+    // Pointer adjustment for current macroblock
+    uint8_t *cu_offset = d_orig + my * cm->padw[color_component] + mx;
 
-  int w = cm->padw[color_component];
-  int h = cm->padh[color_component];
-
-  /* Make sure we are within bounds of reference frame. TODO: Support partial
-     frame bounds. */
-  if (left < 0) { left = 0; }
-  if (top < 0) { top = 0; }
-  if (right > (w - 8)) { right = w - 8; }
-  if (bottom > (h - 8)) { bottom = h - 8; }
-
-  int mx = mb_x * 8;
-  int my = mb_y * 8;
-
-  int best_sad = INT_MAX;
-
-
-  uint8_t *cu_orig, *cu_ref;
-
-
-  cudaMemcpy(cu_orig, orig, w*h * sizeof(uint8_t), cudaMemcpyHostToDevice);
-  cudaMemcpy(cu_ref, ref, w*h * sizeof(uint8_t), cudaMemcpyHostToDevice);
-
-
-  uint8_t * cu_offsett = cu_orig + my*w+mx;
-  // Define variables for minimum SAD and motion vectors
-
-  int best_x = 0, best_y = 0;
-
-  // Allocate memory for best_sad, best_x, best_y on device
-  int *d_best_sad, *d_best_x, *d_best_y;
-  cudaMalloc(&d_best_sad, sizeof(int));
-  cudaMalloc(&d_best_x, sizeof(int));
-  cudaMalloc(&d_best_y, sizeof(int));
-  cudaMemcpy(d_best_sad, &best_sad, sizeof(int), cudaMemcpyHostToDevice);
-  cudaMemcpy(d_best_x, &best_x, sizeof(int), cudaMemcpyHostToDevice);
-  cudaMemcpy(d_best_y, &best_y, sizeof(int), cudaMemcpyHostToDevice);
-
-  // Define grid and block sizes
-  dim3 blocks((right - left + 15) / 16, (bottom - top + 15) / 16);
-  dim3 threads(16, 16);
-
-  // Launch the kernel
-  computeSADIntegrated<<<blocks, threads>>>(left, right, top, bottom, w, mx, my, cu_offsett, cu_ref, d_best_sad, d_best_x, d_best_y);
-
-  // Copy results back to host
-  cudaMemcpy(&best_sad, d_best_sad, sizeof(int), cudaMemcpyDeviceToHost);
-  cudaMemcpy(&best_x, d_best_x, sizeof(int), cudaMemcpyDeviceToHost);
-  cudaMemcpy(&best_y, d_best_y, sizeof(int), cudaMemcpyDeviceToHost);
-
-  // Clean up
-  cudaFree(d_best_sad);
-  cudaFree(d_best_x);
-  cudaFree(d_best_y);
-
-  cudaFree(cu_orig);
-  cudaFree(cu_ref);
-
-  /* Here, there should be a threshold on SAD that checks if the motion vector
-     is cheaper than intraprediction. We always assume MV to be beneficial */
-
-  /* printf("Using motion vector (%d, %d) with SAD %d\n", mb->mv_x, mb->mv_y,
-     best_sad); */
-
-  mb->use_mv = 1;
+    // Launch the kernel
+    dim3 blocks((right - left + 15) / 16, (bottom - top + 15) / 16);
+    dim3 threads(16, 16);
+    computeSADIntegrated<<<blocks, threads>>>(left, right, top, bottom, cm->padw[color_component], mx, my, cu_offset, d_ref, d_best_sad, d_best_x, d_best_y);
 }
-
 
 
 
 
 void c63_motion_estimate(struct c63_common *cm)
 {
-  /* Compare this frame with previous reconstructed frame */
   int mb_x, mb_y;
 
-  /* Luma */
-  for (mb_y = 0; mb_y < cm->mb_rows; ++mb_y)
-  {
+  // Initialize device memory before starting motion estimation
+  initialize_device_memory(cm);
+
+  // Transfer the original and reconstructed frames to the GPU
+  int size_y = cm->padw[Y_COMPONENT] * cm->padh[Y_COMPONENT];
+  int size_u = cm->padw[U_COMPONENT] * cm->padh[U_COMPONENT];
+  int size_v = cm->padw[V_COMPONENT] * cm->padh[V_COMPONENT];
+
+  cudaMemcpy(d_orig_y, cm->curframe->orig->Y, size_y, cudaMemcpyHostToDevice);
+  cudaMemcpy(d_ref_y, cm->refframe->recons->Y, size_y, cudaMemcpyHostToDevice);
+
+  cudaMemcpy(d_orig_u, cm->curframe->orig->U, size_u, cudaMemcpyHostToDevice);
+  cudaMemcpy(d_ref_u, cm->refframe->recons->U, size_u, cudaMemcpyHostToDevice);
+
+  cudaMemcpy(d_orig_v, cm->curframe->orig->V, size_v, cudaMemcpyHostToDevice);
+  cudaMemcpy(d_ref_v, cm->refframe->recons->V, size_v, cudaMemcpyHostToDevice);
+
+/* Luma */
+for (mb_y = 0; mb_y < cm->mb_rows; ++mb_y)
+{
     for (mb_x = 0; mb_x < cm->mb_cols; ++mb_x)
     {
-      me_block_8x8(cm, mb_x, mb_y, cm->curframe->orig->Y,
-          cm->refframe->recons->Y, Y_COMPONENT);
+        me_block_8x8(cm, mb_x, mb_y, Y_COMPONENT, d_orig_y, d_ref_y);
     }
-  }
+}
 
-  /* Chroma */
-  for (mb_y = 0; mb_y < cm->mb_rows / 2; ++mb_y)
-  {
+/* Chroma */
+for (mb_y = 0; mb_y < cm->mb_rows / 2; ++mb_y)
+{
     for (mb_x = 0; mb_x < cm->mb_cols / 2; ++mb_x)
     {
-      me_block_8x8(cm, mb_x, mb_y, cm->curframe->orig->U,
-          cm->refframe->recons->U, U_COMPONENT);
-      me_block_8x8(cm, mb_x, mb_y, cm->curframe->orig->V,
-          cm->refframe->recons->V, V_COMPONENT);
+        me_block_8x8(cm, mb_x, mb_y, U_COMPONENT, d_orig_u, d_ref_u);
+        me_block_8x8(cm, mb_x, mb_y, V_COMPONENT, d_orig_v, d_ref_v);
     }
-  }
+}
+
+
+  // Cleanup device memory after motion estimation is complete
+  cleanup_device_memory();
 }
 
 
