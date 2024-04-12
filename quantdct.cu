@@ -15,6 +15,20 @@
 
 #define ISQRT2 0.70710678118654f
 
+
+__constant__ float cu_dctlookup[8][8] =
+{
+  {1.0f,  0.980785f,  0.923880f,  0.831470f,  0.707107f,  0.555570f,  0.382683f,  0.195090f, },
+  {1.0f,  0.831470f,  0.382683f, -0.195090f, -0.707107f, -0.980785f, -0.923880f, -0.555570f, },
+  {1.0f,  0.555570f, -0.382683f, -0.980785f, -0.707107f,  0.195090f,  0.923880f,  0.831470f, },
+  {1.0f,  0.195090f, -0.923880f, -0.555570f,  0.707107f,  0.831470f, -0.382683f, -0.980785f, },
+  {1.0f, -0.195090f, -0.923880f,  0.555570f,  0.707107f, -0.831470f, -0.382683f,  0.980785f, },
+  {1.0f, -0.555570f, -0.382683f,  0.980785f, -0.707107f, -0.195090f,  0.923880f, -0.831470f, },
+  {1.0f, -0.831470f,  0.382683f,  0.195090f, -0.707107f,  0.980785f, -0.923880f,  0.555570f, },
+  {1.0f, -0.980785f,  0.923880f, -0.831470f,  0.707107f, -0.555570f,  0.382683f, -0.195090f, },
+};
+
+
 static void transpose_block(float *in_data, float *out_data)
 {
   int i, j;
@@ -27,6 +41,20 @@ static void transpose_block(float *in_data, float *out_data)
     }
   }
 }
+__global__ void cuda_transpose_block(float *in_data, float *out_data){
+  {
+    int index = threadIdx.x; // Index from 0 to 63
+    int i = index / 8;       // Row index for the output matrix
+    int j = index % 8;       // Column index for the output matrix
+
+    // Transpose the element
+    if (index < 64){
+      out_data[i * 8 + j] = in_data[j * 8 + i];
+    }
+    
+}
+}
+
 
 static void dct_1d(float *in_data, float *out_data)
 {
@@ -44,6 +72,19 @@ static void dct_1d(float *in_data, float *out_data)
     out_data[i] = dct;
   }
 }
+
+
+__global__ void cuda_dct_1d(float *in_data, float *out_data)
+{
+  int blockOffsett = blockIdx.x * 8;
+  int index = threadIdx.x; // Index from 0 to 63
+  int i = index / 8;       // Row index for the output matrix
+  int j = index % 8;       // Column index for the output matrix
+
+  
+  out_data[i + blockOffsett] += in_data[j + blockOffsett] * cu_dctlookup[j][i];
+}
+
 
 static void idct_1d(float *in_data, float *out_data)
 {
@@ -112,9 +153,15 @@ static void dequantize_block(float *in_data, float *out_data,
   }
 }
 
+
+
+
+
+
 static void dct_quant_block_8x8(int16_t *in_data, int16_t *out_data,
     uint8_t *quant_tbl)
 {
+  
   float mb[8*8] __attribute((aligned(16)));
   float mb2[8*8] __attribute((aligned(16)));
 
@@ -122,17 +169,43 @@ static void dct_quant_block_8x8(int16_t *in_data, int16_t *out_data,
 
   for (i = 0; i < 64; ++i) { mb2[i] = in_data[i]; }
 
+
+  int size = 8 * 8 * sizeof(float);
+  float *d_mb , *d_mb2;
+
+  //allocate on device
+  cudaMalloc(&d_mb, size);
+  cudaMalloc(&d_mb2, size);
+  cudaMemcpy(d_mb2, in_data, size, cudaMemcpyHostToDevice);
+
   /* Two 1D DCT operations with transpose */
-  for (v = 0; v < 8; ++v) { dct_1d(mb2+v*8, mb+v*8); }
-  transpose_block(mb, mb2);
-  for (v = 0; v < 8; ++v) { dct_1d(mb2+v*8, mb+v*8); }
-  transpose_block(mb, mb2);
+  //for (v = 0; v < 8; ++v) { dct_1d(mb2+v*8, mb+v*8); }
+  cuda_dct_1d<<< 8, 8>>>(d_mb2,d_mb);
+  cudaDeviceSynchronize();
+  cuda_transpose_block <<< 1, 64>>>(d_mb, d_mb2);
+  cudaDeviceSynchronize();
+  //for (v = 0; v < 8; ++v) { dct_1d(mb2+v*8, mb+v*8); }
+  cuda_dct_1d<<< 8, 8>>>(d_mb2,d_mb);
+  cudaDeviceSynchronize();
+  cuda_transpose_block <<< 1, 64>>>(d_mb, d_mb2);
+  cudaDeviceSynchronize();
+
+
+  cudaMemcpy(mb, d_mb, size, cudaMemcpyDeviceToHost);
+  cudaMemcpy(mb2, d_mb2, size, cudaMemcpyDeviceToHost);
 
   scale_block(mb2, mb);
   quantize_block(mb, mb2, quant_tbl);
 
   for (i = 0; i < 64; ++i) { out_data[i] = mb2[i]; }
 }
+
+
+
+
+
+
+
 
 static void dequant_idct_block_8x8(int16_t *in_data, int16_t *out_data,
     uint8_t *quant_tbl)

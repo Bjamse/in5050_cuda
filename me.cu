@@ -78,7 +78,6 @@ static void me_block_8x8(struct c63_common *cm, int mb_x, int mb_y,
   if (right > (w - 8)) { right = w - 8; }
   if (bottom > (h - 8)) { bottom = h - 8; }
 
-  int x, y;
 
   int mx = mb_x * 8;
   int my = mb_y * 8;
@@ -135,19 +134,6 @@ static void me_block_8x8(struct c63_common *cm, int mb_x, int mb_y,
 
   mb->use_mv = 1;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
