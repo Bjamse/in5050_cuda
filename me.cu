@@ -13,63 +13,7 @@
 
 #include "me.h"
 #include "tables.h"
-/*
-static void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
-{
-  int u, v;
 
-  *result = 0;
-
-  
-  for (v = 0; v < 8; ++v)
-  {
-    for (u = 0; u < 8; ++u)
-    {
-      *result += abs(block2[v*stride+u] - block1[v*stride+u]);
-    }
-  }
-  
-}
-*/
-
-__global__ void sad_block_8x8(uint8_t *block1, uint8_t *block2, int stride, int *result)
-{
-    int i = threadIdx.x;
-    __shared__ int sad_shared[64]; // Shared memory for thread results
-
-    if (i < 64) {
-        sad_shared[i] = abs(block2[i / 8 * stride + i % 8] - block1[i / 8 * stride + i % 8]);
-        __syncthreads(); // Synchronize to ensure all values are written
-
-        // Reduce within the block
-        if (i == 0) {
-            int block_sad = 0;
-            for (int j = 0; j < 64; ++j) {
-                block_sad += sad_shared[j];
-            }
-            atomicAdd(result, block_sad); // Use atomic add to update the global result
-        }
-    }
-}
-/*
-__global__ void computeSAD(int left, int right, int top, int bottom, int w, int mx, int my, uint8_t *cu_offset, uint8_t *cu_ref, int *best_sad, int *best_x, int *best_y)
-{
-    int x = left + blockIdx.x * blockDim.x + threadIdx.x;
-    int y = top + blockIdx.y * blockDim.y + threadIdx.y;
-
-    if (x < right && y < bottom) {
-        int sad = 0;
-        sad_block_8x8 <<<1, 64>>>(cu_offset, cu_ref + y * w + x, w, &sad);
-        cudaDeviceSynchronize(); // Consider removing if possible or ensure it's necessary and efficient
-
-        // Atomic update for best sad and corresponding coordinates
-        if (atomicMin(best_sad, sad) == sad) {
-            *best_x = x - mx;
-            *best_y = y - my;
-        }
-    }
-}
-*/
 __global__ void computeSADIntegrated(int left, int right, int top, int bottom, int w, int mx, int my, uint8_t *cu_offset, uint8_t *cu_ref, int *best_sad, int *best_x, int *best_y)
 {
     int x = left + blockIdx.x * blockDim.x + threadIdx.x;
@@ -148,46 +92,6 @@ static void me_block_8x8(struct c63_common *cm, int mb_x, int mb_y,
   cudaMemcpy(cu_orig, orig, w*h * sizeof(uint8_t), cudaMemcpyHostToDevice);
   cudaMemcpy(cu_ref, ref, w*h * sizeof(uint8_t), cudaMemcpyHostToDevice);
 
-  /*
-  uint8_t * offsett = orig + my*w+mx;
-
-
-  for (y = top; y < bottom; ++y)
-  {
-    for (x = left; x < right; ++x)
-    {
-      int sad;
-      sad_block_8x8(offsett, ref + y*w+x, w, &sad);
-
-      /// printf("(%4d,%4d) - %d\n", x, y, sad); 
-
-      if (sad < best_sad)
-      {
-        mb->mv_x = x - mx;
-        mb->mv_y = y - my;
-        best_sad = sad;
-      }
-    }
-  }
-  */
-  /*
-  
-  for (y = top; y < bottom; ++y)
-  {
-    for (x = left; x < right; ++x)
-    {
-      int sad = 0;
-      sad_block_8x8 <<<1, 64>>>(cu_offsett, cu_ref + y*w+x, w, &sad);
-
-      cudaDeviceSynchronize();
-      if (sad < best_sad)
-      {
-        mb->mv_x = x - mx;
-        mb->mv_y = y - my;
-        best_sad = sad;
-      }
-    }
-  }*/
 
   uint8_t * cu_offsett = cu_orig + my*w+mx;
   // Define variables for minimum SAD and motion vectors
