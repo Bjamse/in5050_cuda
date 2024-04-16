@@ -188,7 +188,7 @@ __global__ void cuda_mc_block_8x8(macroblock mb, int w, uint8_t *predicted, uint
 
 
 
-// this had no impact on perfomance... its probably jsut too slow to move the data over... but i tried anyway, and the code looks almost nice
+// this had no impact on perfomance... its probably just too slow to move the data over... but i tried anyway, and the code looks almost nice
 void c63_motion_compensate(struct c63_common *cm)
 {
     int mb_x, mb_y;
